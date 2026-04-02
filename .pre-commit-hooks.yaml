@@ -1,0 +1,7 @@
+- id: resolveai-review
+  name: ResolveAI Local Review
+  description: Runs linters on staged changes (Python, JS/TS, Go, Rust, Java, Ruby, C/C++) and writes a report
+  entry: python -m pre_commit.hook
+  language: python
+  always_run: true
+  pass_filenames: false

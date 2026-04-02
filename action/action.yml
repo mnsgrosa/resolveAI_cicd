@@ -1,0 +1,74 @@
+name: 'ResolveAI Code Review'
+description: 'AI-powered code review using Anthropic API. Analyzes PR diffs against your repository patterns.'
+author: 'ResolveAI'
+
+inputs:
+  api_url:
+    description: 'ResolveAI API URL (e.g. https://your-api.example.com)'
+    required: true
+  api_key:
+    description: 'ResolveAI API key for authentication'
+    required: true
+  github_token:
+    description: 'GitHub token for posting PR reviews (pull-requests: write required)'
+    required: true
+    default: ${{ github.token }}
+
+runs:
+  using: 'composite'
+  steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - uses: GrantBirki/git-diff-action@v2
+      id: diff
+      with:
+        raw_diff_file_output: diff.txt
+        file_output_only: "true"
+
+    - name: Send diff to ResolveAI
+      shell: bash
+      env:
+        API_URL: ${{ inputs.api_url }}
+        API_KEY: ${{ inputs.api_key }}
+        GITHUB_TOKEN_INPUT: ${{ inputs.github_token }}
+        REPOSITORY: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        BASE_REF: ${{ github.event.pull_request.base.ref }}
+        HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+      run: |
+        DIFF_CONTENT=$(cat diff.txt)
+
+        PAYLOAD=$(jq -n \
+          --arg repo "$REPOSITORY" \
+          --argjson pr "$PR_NUMBER" \
+          --arg diff "$DIFF_CONTENT" \
+          --arg base "$BASE_REF" \
+          --arg head "$HEAD_REF" \
+          --arg token "$GITHUB_TOKEN_INPUT" \
+          --arg sha "$COMMIT_SHA" \
+          '{
+            repository: $repo,
+            pr_number: $pr,
+            diff_raw: $diff,
+            base_ref: $base,
+            head_ref: $head,
+            github_token: $token,
+            commit_sha: $sha
+          }')
+
+        HTTP_STATUS=$(curl -s -o /tmp/resolveai_response.json -w "%{http_code}" \
+          -X POST "${API_URL}/api/v1/review" \
+          -H "Content-Type: application/json" \
+          -H "X-API-Key: ${API_KEY}" \
+          -d "$PAYLOAD")
+
+        echo "ResolveAI API response (HTTP $HTTP_STATUS):"
+        cat /tmp/resolveai_response.json
+
+        if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+          echo "ResolveAI API call failed with status $HTTP_STATUS"
+          exit 1
+        fi
