@@ -24,6 +24,7 @@ Reviews are posted as `COMMENT` events (not `REQUEST_CHANGES`), so they never bl
 
 - **Pattern-based reviews** — define coding standards per repository (like a claude.md file) and the AI enforces them
 - **Inline PR comments** — issues appear directly on the relevant lines in the PR
+- **Issue solver** — submit a code file and describe a problem; get a diagnosis, pattern violations, and a corrected version of the file
 - **Multi-language pre-commit hook** — local linting for Python, JS/TS, Go, Rust, Java, Ruby, C/C++
 - **Works with private repos** — the GitHub Action runs inside the repo context; the API never clones or accesses your code directly
 - **API key auth** — keys are SHA-256 hashed, scoped per repository
@@ -122,11 +123,30 @@ curl -X POST http://localhost:8000/api/v1/review \
 
 **Note:** The `github_token` needs `pull-requests: write` scope and the PR must exist. To test just the AI analysis without posting to GitHub, use a fake token — Anthropic will process the diff and you'll see the analysis in the error response before the GitHub step fails.
 
+### Diagnose an Issue
+
+Send a code file and a description of the problem you're facing. The API analyzes it against your repository's patterns and returns a diagnosis plus a corrected version of the file:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/diagnose \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: YOUR_KEY" \
+  -d '{
+    "repository": "owner/repo",
+    "file_path": "app/users.py",
+    "code": "def get_user(user_id):\n    db = connect(\"postgres://admin:password123@localhost/mydb\")\n    return db.query(f\"SELECT * FROM users WHERE id = {user_id}\")\n",
+    "issue_description": "Users can access other users data by changing the ID in the URL"
+  }'
+```
+
+The language is inferred from the file extension. The response includes `original_code`, `fixed_code` (the complete corrected file), `diagnosis`, `pattern_violations`, `suggestions`, and a `summary`.
+
 ## API Endpoints
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
 | `POST` | `/api/v1/review` | API key | Receive diff, run AI review, post to PR |
+| `POST` | `/api/v1/diagnose` | API key | Submit code + issue description, get diagnosis and corrected file |
 | `GET` | `/api/v1/patterns/{owner}/{repo}` | API key | Get coding pattern file |
 | `PUT` | `/api/v1/patterns/{owner}/{repo}` | API key | Create or update pattern file |
 | `DELETE` | `/api/v1/patterns/{owner}/{repo}` | API key | Delete pattern file |

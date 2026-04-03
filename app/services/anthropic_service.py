@@ -5,7 +5,7 @@ import logging
 import anthropic
 
 from app.config import settings
-from app.services.prompts import EXECUTOR_SYSTEM_PROMPT, PLANNER_SYSTEM_PROMPT
+from app.services.prompts import DIAGNOSE_SYSTEM_PROMPT, EXECUTOR_SYSTEM_PROMPT, PLANNER_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +74,49 @@ async def _generate_single_fix(issue: ReviewIssue, diff: str) -> ReviewIssue:
         logger.exception("Failed to generate fix for issue in %s", issue.file)
 
     return issue
+
+
+_EXT_TO_LANGUAGE: dict[str, str] = {
+    ".py": "python", ".js": "javascript", ".ts": "typescript",
+    ".tsx": "typescript", ".jsx": "javascript", ".go": "go",
+    ".rs": "rust", ".java": "java", ".rb": "ruby",
+    ".c": "c", ".cpp": "cpp", ".cs": "csharp", ".php": "php",
+}
+
+
+def _infer_language(file_path: str) -> str:
+    ext = "." + file_path.rsplit(".", 1)[-1] if "." in file_path else ""
+    return _EXT_TO_LANGUAGE.get(ext, "")
+
+
+async def diagnose_code(
+    code: str,
+    issue_description: str,
+    patterns: str | None,
+    file_path: str,
+) -> dict:
+    """Analyze code against patterns and diagnose the described issue."""
+    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    patterns_section = patterns or "No patterns defined. Use general best practices."
+
+    language = _infer_language(file_path)
+    lang_hint = f" ({language})" if language else ""
+
+    user_content = (
+        f"## Repository Patterns\n{patterns_section}\n\n"
+        f"## Code\nFile: {file_path}{lang_hint}\n```{language}\n{code}\n```\n\n"
+        f"## Issue Description\n{issue_description}"
+    )
+
+    response = await client.messages.create(
+        model=settings.planner_model,
+        max_tokens=4096,
+        system=DIAGNOSE_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_content}],
+    )
+
+    raw = response.content[0].text.strip()
+    return json.loads(raw)
 
 
 async def generate_fixes(plan: ReviewPlan, diff: str) -> ReviewPlan:

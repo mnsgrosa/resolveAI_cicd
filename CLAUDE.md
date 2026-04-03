@@ -40,20 +40,22 @@ app/
   routers/
     patterns.py        # CRUD /api/v1/patterns/{owner}/{repo}
     review.py          # POST /api/v1/review (orchestrates full flow)
+    diagnose.py        # POST /api/v1/diagnose (standalone issue solver)
   services/
-    prompts.py         # Planner + Executor system prompts
-    anthropic_service.py  # plan_review() + generate_fixes()
+    prompts.py         # Planner + Executor + Diagnose system prompts
+    anthropic_service.py  # plan_review() + generate_fixes() + diagnose_code()
     github_service.py     # post_review() via httpx
 action/action.yml      # Composite GitHub Action
 .github/workflows/     # Example user workflow
 pre_commit/hook.py     # Local multi-language linter hook
-tests/                 # 9 tests, all passing
+tests/                 # 12 tests, all passing
 ```
 
 ### API Endpoints
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
 | POST | /api/v1/review | API key | Receive diff, run AI review, post to PR |
+| POST | /api/v1/diagnose | API key | Submit code + issue description, get AI diagnosis against repo patterns |
 | GET | /api/v1/patterns/{owner}/{repo} | API key | Get pattern file |
 | PUT | /api/v1/patterns/{owner}/{repo} | API key | Create/update pattern file |
 | DELETE | /api/v1/patterns/{owner}/{repo} | API key | Delete pattern file |
