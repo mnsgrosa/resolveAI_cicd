@@ -1,8 +1,10 @@
 # ResolveAI CICD
 
-AI-powered code review tool that integrates with GitHub Actions. When a pull request is opened, it extracts the diff, analyzes it against your repository's coding patterns using Anthropic's Claude, and posts inline review comments directly on the PR.
+AI-powered code review tool that integrates with GitHub Actions. When a pull request is opened, it extracts the diff, analyzes it against your repository's coding patterns using Anthropic's Claude, and posts inline review comments directly on the PR. **When no PR exists, it can create one automatically with a full markdown review report.**
 
 ## How It Works
+
+### Standard Flow (PR Already Exists)
 
 ```
 PR opened/updated
@@ -14,6 +16,20 @@ PR opened/updated
             └─ Posts review with inline comments to the PR via GitHub API
 ```
 
+### Auto-Review Flow (No PR Exists)
+
+```
+Commit pushed to a branch without a PR
+  └─ GitHub Action extracts diff
+       └─ Sends diff to ResolveAI API (POST /api/v1/auto-review, create_pr=true)
+            ├─ Phase 0: API creates a new PR automatically
+            ├─ Loads your coding patterns from the database
+            ├─ Phase 1: Claude analyzes diff → structured list of issues
+            ├─ Phase 2: Claude generates concrete code fixes
+            ├─ Phase 3: Posts review with inline comments to the new PR
+            └─ Phase 4: Creates review-report.md in the source branch
+```
+
 **Two-phase AI review:**
 - **Planning** — identifies bugs, pattern violations, security issues, and performance problems
 - **Execution** — generates specific code suggestions for each flagged issue
@@ -22,8 +38,10 @@ Reviews are posted as `COMMENT` events (not `REQUEST_CHANGES`), so they never bl
 
 ## Features
 
-- **Pattern-based reviews** — define coding standards per repository (like a claude.md file) and the AI enforces them
+- **Pattern-based reviews** — define coding standards per repository (like a CLAUDE.md file) and the AI enforces them
 - **Inline PR comments** — issues appear directly on the relevant lines in the PR
+- **Auto-create PRs** — when no PR exists, the API can create one automatically with inline comments + a `review-report.md` file
+- **Markdown review reports** — full analysis report committed to the source branch
 - **Multi-language pre-commit hook** — local linting for Python, JS/TS, Go, Rust, Java, Ruby, C/C++
 - **Works with private repos** — the GitHub Action runs inside the repo context; the API never clones or accesses your code directly
 - **API key auth** — keys are SHA-256 hashed, scoped per repository
@@ -126,7 +144,8 @@ curl -X POST http://localhost:8000/api/v1/review \
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| `POST` | `/api/v1/review` | API key | Receive diff, run AI review, post to PR |
+| `POST` | `/api/v1/review` | API key | Receive diff, run AI review, post inline comments to existing PR |
+| `POST` | `/api/v1/auto-review` | API key | Receive diff, auto-create PR if needed, post inline comments + `review-report.md` |
 | `GET` | `/api/v1/patterns/{owner}/{repo}` | API key | Get coding pattern file |
 | `PUT` | `/api/v1/patterns/{owner}/{repo}` | API key | Create or update pattern file |
 | `DELETE` | `/api/v1/patterns/{owner}/{repo}` | API key | Delete pattern file |
@@ -142,6 +161,8 @@ Add the action to any repository to get AI reviews on every PR.
 - `RESOLVEAI_API_KEY` — the API key for this repo
 
 ### 2. Create the Workflow
+
+#### Standard — Review Existing PRs
 
 Create `.github/workflows/resolveai-review.yml`:
 
@@ -166,6 +187,45 @@ jobs:
           api_key: ${{ secrets.RESOLVEAI_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 ```
+
+#### Auto-Create PRs — When No PR Exists
+
+```yaml
+name: ResolveAI Auto Review
+
+on:
+  push:
+    branches: ['**']
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-review:
+    if: ${{ !github.event.pull_request }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: YOUR_ORG/resolveai-cicd/action@main
+        with:
+          api_url: ${{ secrets.RESOLVEAI_API_URL }}
+          api_key: ${{ secrets.RESOLVEAI_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          create_pr: true
+          pr_title: 'ResolveAI Auto-Review — ${{ github.ref_name }}'
+          pr_body: 'Automatically created by ResolveAI for code review.'
+```
+
+### Action Inputs
+
+| Input | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `api_url` | Yes | — | ResolveAI API URL |
+| `api_key` | Yes | — | API key |
+| `github_token` | No | `${{ github.token }}` | GitHub token |
+| `create_pr` | No | `false` | Auto-create PR when none exists |
+| `pr_title` | No | `ResolveAI Auto-Review` | Title for auto-created PR |
+| `pr_body` | No | _default message_ | Body for auto-created PR |
 
 ## Pre-Commit Hook
 

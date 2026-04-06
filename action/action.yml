@@ -13,6 +13,18 @@ inputs:
     description: 'GitHub token for posting PR reviews (pull-requests: write required)'
     required: true
     default: ${{ github.token }}
+  create_pr:
+    description: 'If true and no PR exists, create a new PR automatically'
+    required: false
+    default: 'false'
+  pr_title:
+    description: 'Title for the auto-created PR (only used when create_pr is true)'
+    required: false
+    default: 'ResolveAI Auto-Review'
+  pr_body:
+    description: 'Body for the auto-created PR (only used when create_pr is true)'
+    required: false
+    default: 'This PR was automatically created by ResolveAI for code review.'
 
 runs:
   using: 'composite'
@@ -34,33 +46,89 @@ runs:
         API_KEY: ${{ inputs.api_key }}
         GITHUB_TOKEN_INPUT: ${{ inputs.github_token }}
         REPOSITORY: ${{ github.repository }}
-        PR_NUMBER: ${{ github.event.pull_request.number }}
-        BASE_REF: ${{ github.event.pull_request.base.ref }}
-        HEAD_REF: ${{ github.event.pull_request.head.ref }}
-        COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+        PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+        BASE_REF: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}
+        HEAD_REF: ${{ github.event.pull_request.head.ref || github.ref_name }}
+        COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        CREATE_PR: ${{ inputs.create_pr }}
+        PR_TITLE: ${{ inputs.pr_title }}
+        PR_BODY: ${{ inputs.pr_body }}
       run: |
         DIFF_CONTENT=$(cat diff.txt)
 
-        PAYLOAD=$(jq -n \
-          --arg repo "$REPOSITORY" \
-          --argjson pr "$PR_NUMBER" \
-          --arg diff "$DIFF_CONTENT" \
-          --arg base "$BASE_REF" \
-          --arg head "$HEAD_REF" \
-          --arg token "$GITHUB_TOKEN_INPUT" \
-          --arg sha "$COMMIT_SHA" \
-          '{
-            repository: $repo,
-            pr_number: $pr,
-            diff_raw: $diff,
-            base_ref: $base,
-            head_ref: $head,
-            github_token: $token,
-            commit_sha: $sha
-          }')
+        # Determine endpoint and payload based on create_pr
+        if [ "$CREATE_PR" = "true" ]; then
+          ENDPOINT="${API_URL}/api/v1/auto-review"
+          if [ -z "$PR_NUMBER" ]; then
+            # No PR exists — let the API create one
+            PAYLOAD=$(jq -n \
+              --arg repo "$REPOSITORY" \
+              --arg diff "$DIFF_CONTENT" \
+              --arg base "$BASE_REF" \
+              --arg head "$HEAD_REF" \
+              --arg token "$GITHUB_TOKEN_INPUT" \
+              --arg sha "$COMMIT_SHA" \
+              --argjson create_pr true \
+              --arg pr_title "$PR_TITLE" \
+              --arg pr_body "$PR_BODY" \
+              '{
+                repository: $repo,
+                diff_raw: $diff,
+                base_ref: $base,
+                head_ref: $head,
+                github_token: $token,
+                commit_sha: $sha,
+                create_pr: $create_pr,
+                pr_title: $pr_title,
+                pr_body: $pr_body
+              }')
+          else
+            # PR already exists — treat like normal review
+            PAYLOAD=$(jq -n \
+              --arg repo "$REPOSITORY" \
+              --argjson pr "$PR_NUMBER" \
+              --arg diff "$DIFF_CONTENT" \
+              --arg base "$BASE_REF" \
+              --arg head "$HEAD_REF" \
+              --arg token "$GITHUB_TOKEN_INPUT" \
+              --arg sha "$COMMIT_SHA" \
+              '{
+                repository: $repo,
+                pr_number: $pr,
+                diff_raw: $diff,
+                base_ref: $base,
+                head_ref: $head,
+                github_token: $token,
+                commit_sha: $sha
+              }')
+          fi
+        else
+          ENDPOINT="${API_URL}/api/v1/review"
+          if [ -z "$PR_NUMBER" ]; then
+            echo "Error: No PR number available and create_pr is false"
+            exit 1
+          fi
+          PAYLOAD=$(jq -n \
+            --arg repo "$REPOSITORY" \
+            --argjson pr "$PR_NUMBER" \
+            --arg diff "$DIFF_CONTENT" \
+            --arg base "$BASE_REF" \
+            --arg head "$HEAD_REF" \
+            --arg token "$GITHUB_TOKEN_INPUT" \
+            --arg sha "$COMMIT_SHA" \
+            '{
+              repository: $repo,
+              pr_number: $pr,
+              diff_raw: $diff,
+              base_ref: $base,
+              head_ref: $head,
+              github_token: $token,
+              commit_sha: $sha
+            }')
+        fi
 
         HTTP_STATUS=$(curl -s -o /tmp/resolveai_response.json -w "%{http_code}" \
-          -X POST "${API_URL}/api/v1/review" \
+          -X POST "$ENDPOINT" \
           -H "Content-Type: application/json" \
           -H "X-API-Key: ${API_KEY}" \
           -d "$PAYLOAD")

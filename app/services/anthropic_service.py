@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 
 import anthropic
 
@@ -8,6 +9,15 @@ from app.config import settings
 from app.services.prompts import EXECUTOR_SYSTEM_PROMPT, PLANNER_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_json(text: str) -> str:
+    """Strip markdown code fences and return the raw JSON string."""
+    text = text.strip()
+    match = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", text)
+    if match:
+        return match.group(1).strip()
+    return text
 
 
 class ReviewIssue:
@@ -44,8 +54,15 @@ async def plan_review(diff: str, patterns: str | None) -> ReviewPlan:
         messages=[{"role": "user", "content": user_content}],
     )
 
-    raw = response.content[0].text.strip()
-    data = json.loads(raw)
+    raw_text = response.content[0].text if response.content else ""
+    logger.debug("Planner raw response (first 500 chars): %s", raw_text[:500])
+    raw = _extract_json(raw_text)
+    if not raw:
+        raise ValueError(f"Anthropic returned empty response (stop_reason={response.stop_reason})")
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Anthropic returned invalid JSON: {raw[:200]}") from exc
     return ReviewPlan(data)
 
 
@@ -66,8 +83,15 @@ async def _generate_single_fix(issue: ReviewIssue, diff: str) -> ReviewIssue:
             system=EXECUTOR_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
-        raw = response.content[0].text.strip()
-        data = json.loads(raw)
+        raw_text = response.content[0].text if response.content else ""
+        logger.debug("Executor raw response (first 500 chars): %s", raw_text[:500])
+        raw = _extract_json(raw_text)
+        if not raw:
+            raise ValueError(f"Anthropic returned empty response (stop_reason={response.stop_reason})")
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Anthropic returned invalid JSON: {raw[:200]}") from exc
         issue.suggestion = data.get("suggestion")
         issue.explanation = data.get("explanation")
     except Exception:
