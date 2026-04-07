@@ -63,6 +63,18 @@ Reviews are posted as `COMMENT` events (not `REQUEST_CHANGES`), so they never bl
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) (or pip)
 - An [Anthropic API key](https://console.anthropic.com/)
+- [GitHub CLI (`gh`)](https://cli.github.com/) — required for local testing scripts (`scripts/test_local_review.py`). Install with your package manager:
+  ```bash
+  # Arch / CachyOS
+  sudo pacman -S github-cli
+
+  # Ubuntu / Debian
+  sudo apt install gh
+
+  # macOS
+  brew install gh
+  ```
+  Then authenticate: `gh auth login`
 
 ### 1. Install
 
@@ -244,6 +256,113 @@ jobs:
 | `pr_title` | No | `ResolveAI Auto-Review` | Title for auto-created PR |
 | `pr_body` | No | _default message_ | Body for auto-created PR |
 
+## Integrating Other Repositories
+
+Any repository can be connected to the same deployed API instance. Repeat these steps for each new repo:
+
+### 1. Create an API key for the repo
+
+```bash
+# On the machine running the API (or via railway run / fly ssh)
+.venv/bin/python -m scripts.create_api_key owner/new-repo
+```
+
+Save the printed raw key — it cannot be recovered.
+
+> **Note:** API key scope is not enforced yet (V2 roadmap). A single key technically works for all repos, but creating one per repo is recommended for future isolation and revocation.
+
+### 2. Add the workflow to the target repo
+
+Create `.github/workflows/resolveai-review.yml` in the target repository's `main` branch. Use the inlined version below (avoids a cross-repo dependency on the `resolveAI_cicd` action):
+
+```yaml
+name: ResolveAI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: GrantBirki/git-diff-action@v2
+        id: diff
+        with:
+          raw_diff_file_output: diff.txt
+          file_output_only: "true"
+
+      - name: Send diff to ResolveAI
+        env:
+          API_URL: ${{ secrets.RESOLVEAI_API_URL }}
+          API_KEY: ${{ secrets.RESOLVEAI_API_KEY }}
+          GITHUB_TOKEN_INPUT: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          DIFF_CONTENT=$(cat diff.txt)
+          if [ -z "$DIFF_CONTENT" ]; then
+            echo "No diff found, skipping review"
+            exit 0
+          fi
+
+          PAYLOAD=$(jq -n \
+            --arg repo "$REPOSITORY" \
+            --argjson pr "$PR_NUMBER" \
+            --arg diff "$DIFF_CONTENT" \
+            --arg base "$BASE_REF" \
+            --arg head "$HEAD_REF" \
+            --arg token "$GITHUB_TOKEN_INPUT" \
+            --arg sha "$COMMIT_SHA" \
+            '{repository:$repo,pr_number:$pr,diff_raw:$diff,base_ref:$base,head_ref:$head,github_token:$token,commit_sha:$sha}')
+
+          HTTP_STATUS=$(curl -s -o /tmp/resolveai_response.json -w "%{http_code}" \
+            -X POST "${API_URL}/api/v1/review" \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: ${API_KEY}" \
+            -d "$PAYLOAD")
+
+          echo "ResolveAI API response (HTTP $HTTP_STATUS):"
+          cat /tmp/resolveai_response.json
+
+          if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+            exit 1
+          fi
+```
+
+### 3. Set repository secrets
+
+In the target repo go to **Settings → Secrets and variables → Actions** and add:
+
+| Secret | Value |
+|--------|-------|
+| `RESOLVEAI_API_URL` | Your deployed API URL (no trailing slash) |
+| `RESOLVEAI_API_KEY` | Raw key from step 1 |
+
+`GITHUB_TOKEN` is provided automatically by GitHub Actions — no setup needed.
+
+### 4. (Optional) Add repo-specific coding patterns
+
+```bash
+curl -X PUT https://<your-api>/api/v1/patterns/owner/new-repo \
+  -H "X-API-Key: <key>" \
+  -H "Content-Type: application/json" \
+  -d '{"content": "- Always use async/await\n- No hardcoded secrets\n- All public functions need docstrings"}'
+```
+
+The AI will enforce these rules on every PR in that repository.
+
 ## Pre-Commit Hook
 
 Local linting hook that runs on staged files and writes a report to `.resolveai/review.md`. Each linter only runs if its binary is available on PATH.
@@ -308,6 +427,24 @@ Sends a hardcoded Go diff to `POST /api/v1/review` against an existing PR. Usefu
 ```
 
 Edit `API_KEY`, `GITHUB_TOKEN`, and `REQUEST_BODY` fields at the top of the file before running.
+
+### `scripts/test_local_review.py`
+
+Sends a **real PR diff** to the local API for end-to-end testing without deploying anything. Fetches the diff, commit SHA, and refs directly from GitHub via the `gh` CLI, then POSTs to the local server.
+
+**Requires:** local API running + `gh` CLI authenticated.
+
+```bash
+.venv/bin/python -m scripts.test_local_review owner/repo <pr_number> --api-key <key>
+
+# Example
+.venv/bin/python -m scripts.test_local_review mnsgrosa/ResolveAI-demos 3 --api-key <key>
+
+# Point to a remote deployment instead of localhost
+.venv/bin/python -m scripts.test_local_review owner/repo 3 --api-key <key> --api-url https://your-api.example.com
+```
+
+The script prints the review ID, number of inline comments posted, and the AI summary.
 
 ### `scripts/create_api_key.py`
 
