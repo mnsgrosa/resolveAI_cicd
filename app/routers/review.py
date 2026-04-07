@@ -9,7 +9,7 @@ from app.database import get_session
 from app.models.pattern import Pattern
 from app.schemas.review import ReviewRequest, ReviewResponse
 from app.services.anthropic_service import generate_fixes, plan_review
-from app.services.github_service import post_review
+from app.services.github_service import post_diff_comment, post_review
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["review"])
@@ -57,6 +57,17 @@ async def review(
     except Exception as exc:
         logger.exception("GitHub review posting failed")
         raise HTTPException(status_code=502, detail=f"GitHub posting failed: {exc}") from exc
+
+    # Post diff as conversation comment (non-fatal)
+    try:
+        await post_diff_comment(
+            repository=body.repository,
+            pr_number=body.pr_number,
+            diff_raw=body.diff_raw,
+            github_token=body.github_token,
+        )
+    except Exception as exc:
+        logger.warning("Failed to post diff comment: %s", exc)
 
     return ReviewResponse(
         status="success",

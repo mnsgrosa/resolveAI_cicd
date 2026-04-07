@@ -27,6 +27,7 @@ Commit pushed to a branch without a PR
             ├─ Phase 1: Claude analyzes diff → structured list of issues
             ├─ Phase 2: Claude generates concrete code fixes
             ├─ Phase 3: Posts review with inline comments to the new PR
+            ├─ Phase 3.5: Posts the full diff as a collapsible comment in the PR conversation tab
             └─ Phase 4: Creates review-report.md in the source branch
 ```
 
@@ -40,6 +41,7 @@ Reviews are posted as `COMMENT` events (not `REQUEST_CHANGES`), so they never bl
 
 - **Pattern-based reviews** — define coding standards per repository (like a CLAUDE.md file) and the AI enforces them
 - **Inline PR comments** — issues appear directly on the relevant lines in the PR
+- **Diff in conversation tab** — the full git diff is posted as a collapsible comment in the PR conversation, so reviewers see the complete changeset without switching tabs
 - **Auto-create PRs** — when no PR exists, the API can create one automatically with inline comments + a `review-report.md` file
 - **Markdown review reports** — full analysis report committed to the source branch
 - **Multi-language pre-commit hook** — local linting for Python, JS/TS, Go, Rust, Java, Ruby, C/C++
@@ -77,7 +79,22 @@ uv pip install --python .venv -e ".[dev]"
 cp .env.example .env
 ```
 
-Edit `.env` and set your `ANTHROPIC_API_KEY`.
+> **Security:** Do not put `ANTHROPIC_API_KEY` in `.env`. Pass it inline when starting the server or store it in GitHub secrets — never commit it to the repository.
+
+Start the server with the key inline:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... .venv/bin/uvicorn app.main:app --reload
+```
+
+Or export it in your shell session:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+.venv/bin/uvicorn app.main:app --reload
+```
+
+For GitHub Actions deployments, add `ANTHROPIC_API_KEY` as a repository secret and inject it via the workflow environment.
 
 ### 3. Create an API Key
 
@@ -90,7 +107,7 @@ This prints a key — save it, it cannot be recovered.
 ### 4. Start the Server
 
 ```bash
-.venv/bin/uvicorn app.main:app --reload
+ANTHROPIC_API_KEY=sk-ant-... .venv/bin/uvicorn app.main:app --reload
 ```
 
 The API is now running at `http://localhost:8000`. Interactive docs are at `http://localhost:8000/docs`.
@@ -253,6 +270,61 @@ repos:
       - id: resolveai-review
 ```
 
+## Developer Scripts
+
+All scripts live in `scripts/` and are meant to be run with the server already running locally (`uvicorn app.main:app --reload`).
+
+### `scripts/full_review_demo.py`
+
+End-to-end demo that creates a PR, runs the full AI review, posts inline comments, and posts the diff as a collapsible conversation comment.
+
+```bash
+GITHUB_TOKEN=<pat> .venv/bin/python scripts/full_review_demo.py
+```
+
+Sets `create_pr=true`, so it creates a new branch and PR on `mnsgrosa/ResolveAI-demos` with a Go auth handler containing intentional security issues. After it completes, open the PR URL printed in the output to see:
+- Inline comments on flagged lines (Files changed tab)
+- Collapsible diff comment in the Conversation tab (one `<details>` block per file)
+- `review-report.md` committed to the source branch
+
+The `GITHUB_TOKEN` must have `contents: write` and `pull-requests: write` permissions on the target repo.
+
+### `scripts/test_diff_comment.py`
+
+Unit-level test for `post_diff_comment` only — no server needed, no AI calls, no full review. Useful for iterating on the diff comment formatting in isolation.
+
+```bash
+GITHUB_TOKEN=<pat> .venv/bin/python scripts/test_diff_comment.py
+```
+
+Posts a two-file sample diff as a conversation comment to PR #1 of `mnsgrosa/ResolveAI-demos`. Edit `REPOSITORY` and `PR_NUMBER` at the top of the file to target a different PR.
+
+### `scripts/request_review.py`
+
+Sends a hardcoded Go diff to `POST /api/v1/review` against an existing PR. Useful for testing the standard review flow without auto-PR creation.
+
+```bash
+.venv/bin/python scripts/request_review.py
+```
+
+Edit `API_KEY`, `GITHUB_TOKEN`, and `REQUEST_BODY` fields at the top of the file before running.
+
+### `scripts/create_api_key.py`
+
+Creates a new API key scoped to a repository and stores it (hashed) in the database.
+
+```bash
+.venv/bin/python -m scripts.create_api_key owner/repo
+```
+
+### `scripts/send_go_pattern.py`
+
+Uploads a Go coding pattern file to the patterns API for a given repository.
+
+```bash
+.venv/bin/python scripts/send_go_pattern.py
+```
+
 ## Running Tests
 
 ```bash
@@ -274,7 +346,7 @@ All configuration is via environment variables (or `.env` file):
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `ANTHROPIC_API_KEY` | Yes | — | Anthropic API key |
+| `ANTHROPIC_API_KEY` | Yes | — | Anthropic API key — pass inline or via shell export, never commit to `.env` |
 | `DATABASE_URL` | No | `sqlite+aiosqlite:///./resolveai.db` | Database connection string |
 | `PLANNER_MODEL` | No | `claude-sonnet-4-6` | Model for analysis phase |
 | `EXECUTOR_MODEL` | No | `claude-sonnet-4-6` | Model for fix generation |

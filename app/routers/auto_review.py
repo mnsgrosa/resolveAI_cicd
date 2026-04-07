@@ -16,6 +16,7 @@ from app.services.github_service import (
     create_pull_request,
     get_branch_sha,
     parse_diff_files,
+    post_diff_comment,
     post_review,
 )
 
@@ -181,6 +182,17 @@ async def auto_review(
     except Exception as exc:
         logger.exception("GitHub review posting failed")
         raise HTTPException(status_code=502, detail=f"GitHub posting failed: {exc}") from exc
+
+    # Phase 3.5: post diff as conversation comment (non-fatal)
+    try:
+        await post_diff_comment(
+            repository=body.repository,
+            pr_number=pr_number,
+            diff_raw=body.diff_raw,
+            github_token=body.github_token,
+        )
+    except Exception as exc:
+        logger.warning("Failed to post diff comment: %s", exc)
 
     # Phase 4: create markdown report file in the PR branch
     report_file_path: str | None = None

@@ -131,6 +131,99 @@ def parse_diff_files(diff_raw: str) -> list[dict]:
     return files
 
 
+def _split_diff_by_file(diff_raw: str) -> list[tuple[str, str]]:
+    """Split a unified diff into (filename, file_diff_chunk) pairs."""
+    files: list[tuple[str, str]] = []
+    current_lines: list[str] = []
+    current_name: str | None = None
+
+    for line in diff_raw.splitlines(keepends=True):
+        if line.startswith("diff --git "):
+            if current_name is not None:
+                files.append((current_name, "".join(current_lines)))
+            current_lines = [line]
+            # Fallback name from diff --git a/... b/... header
+            parts = line.split(" b/", 1)
+            current_name = parts[1].strip() if len(parts) == 2 else line.strip()
+        else:
+            if line.startswith("+++ b/"):
+                current_name = line[6:].strip()
+            if current_lines is not None:
+                current_lines.append(line)
+
+    if current_name is not None and current_lines:
+        files.append((current_name, "".join(current_lines)))
+
+    return files
+
+
+MAX_COMMENT_LENGTH = 65_536
+
+
+async def post_diff_comment(
+    repository: str,
+    pr_number: int,
+    diff_raw: str,
+    github_token: str,
+) -> str | None:
+    """Post the git diff as a collapsible comment in the PR conversation tab."""
+    owner, repo = repository.split("/", 1)
+    url = f"{GITHUB_API}/repos/{owner}/{repo}/issues/{pr_number}/comments"
+
+    headers = {
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "application/vnd.github.v3+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    file_diffs = _split_diff_by_file(diff_raw)
+    total_files = len(file_diffs)
+
+    header = "## Code Changes\n\n"
+    body = header
+    included = 0
+
+    for filename, chunk in file_diffs:
+        section = (
+            f"<details>\n"
+            f"<summary><code>{filename}</code></summary>\n\n"
+            f"```diff\n{chunk}```\n\n"
+            f"</details>\n\n"
+        )
+
+        # If this single file alone exceeds remaining budget, truncate its content
+        remaining = MAX_COMMENT_LENGTH - len(body) - 200  # reserve for truncation notice
+        if len(section) > remaining:
+            if included == 0:
+                # Must include at least one file — truncate its content
+                truncated_chunk = chunk[:remaining - 60] + "\n... (truncated)\n"
+                section = (
+                    f"<details>\n"
+                    f"<summary><code>{filename}</code></summary>\n\n"
+                    f"```diff\n{truncated_chunk}```\n\n"
+                    f"</details>\n\n"
+                )
+                body += section
+                included += 1
+            break
+
+        body += section
+        included += 1
+
+    if included < total_files:
+        omitted = total_files - included
+        body += f"> **Note:** Diff truncated — {omitted} file(s) omitted due to GitHub comment size limit ({total_files} files total).\n"
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(url, json={"body": body}, headers=headers)
+        if resp.status_code not in (200, 201):
+            logger.error(
+                "GitHub API error %s posting diff comment: %s", resp.status_code, resp.text
+            )
+            resp.raise_for_status()
+        return str(resp.json().get("id"))
+
+
 async def get_branch_sha(repository: str, branch: str, github_token: str) -> str:
     """Return the commit SHA at the tip of a branch."""
     owner, repo = repository.split("/", 1)
