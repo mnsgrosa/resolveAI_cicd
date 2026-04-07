@@ -53,6 +53,7 @@ async def review(
             commit_sha=body.commit_sha,
             plan=plan,
             github_token=body.github_token,
+            diff_raw=body.diff_raw,
         )
     except Exception as exc:
         logger.exception("GitHub review posting failed")
